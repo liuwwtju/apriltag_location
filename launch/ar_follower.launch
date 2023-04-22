@@ -2,6 +2,7 @@
   <node pkg="apriltag_detection" name="apriltag_detection" type="ar_follow.py" clear_params="true" output="screen">
   	<!-- 参数设置文件 -->
    <rosparam command='load' file='$(find apriltag_detection)/parameters/ar_param.yaml' />
+   <rosparam ns='PID_controller' command='load' file='$(find apriltag_detection)/parameters/PID_param.yaml' />
   </node>
 </launch>
 

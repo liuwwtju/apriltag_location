@@ -1,34 +1,33 @@
 #!/usr/bin/env python
 # coding=utf-8
 
+import numpy as np
 import rospy
 from geometry_msgs.msg import Twist
 from std_msgs.msg import String
 from math import copysign
 from apriltag_ros.msg import AprilTagDetectionArray
 from dynamic_reconfigure.server import Server
-from simple_follower.cfg import arPIDConfig
+from apriltag_detection.cfg import arPIDConfig
 
 class ArFollower():
 	def __init__(self):
 		rospy.init_node("ar_follower")
 		rate = rospy.Rate(1)
-		#参数初始化
-		self.max_angular_speed = rospy.get_param("~max_angular_speed")
-		self.min_angular_speed = rospy.get_param("~min_angular_speed")
-		self.max_linear_speed = rospy.get_param("~max_linear_speed")
-		self.min_linear_speed = rospy.get_param("~min_linear_speed")
 
-		self.goal_x = rospy.get_param("~goal_x")
-		self.goal_y = rospy.get_param("~goal_y")
+		global PID_param
+
+		self.targetDist_y= rospy.get_param('~targetDist_y') # 获取中距值
+		self.targetDist_x= rospy.get_param('~targetDist_x')# 将中距值赋值为动态调参后的值
+		self.targetDist_z= rospy.get_param('~targetDist_z')
+		self.max_speed_y = rospy.get_param("~max_speed_y")
+		self.max_speed_x = rospy.get_param("~max_speed_x")
+		self.max_speed_z = rospy.get_param("~max_speed_z")
+
+		PID_param = rospy.get_param('~PID_controller') # 获取PID值 [y轴,x轴,z轴]
 
 		#rqt_srv
 		self.srv = Server(arPIDConfig,self.config_callback)
-		self.linearfront_p = 1.6
-		self.linearback_p = 1
-		self.angularleft_p = 3.0
-		self.angularright_p =2.7
-		self.d_param = 0.4
 		
 		#订阅AR标签位姿信息，发布速度话题
 		self.cmd_vel_pub = rospy.Publisher("/cmd_vel", Twist, queue_size=5)
@@ -43,20 +42,15 @@ class ArFollower():
 			self.cmd_vel_pub.publish(self.move_cmd)
 			rate.sleep()
 
-	def config_callback(self,config,level):
-		self.linearfront_p=config.linearfront_p
-		self.linearback_p=config.linearback_p
-		self.angularleft_p=config.angularleft_p
-		self.angularright_p=config.angularright_p
-		self.d_param=config.d_param
-
-		self.max_angular_speed=config.max_angular_speed
-		self.min_angular_speed=config.min_angular_speed
-		self.max_linear_speed=config.max_linear_speed
-		self.min_linear_speed=config.min_linear_speed
-
-		self.goal_x=config.goal_x
-		self.goal_y=config.goal_y
+	def config_callback(self, config, level):
+		self.targetDist_y = config.targetDist_y # 将中距值赋值为动态调参后的值
+		self.targetDist_x = config.targetDist_x
+		self.targetDist_z = config.targetDist_z
+		PID_param['P'] = [config.P_y,config.P_x,config.P_z]
+		PID_param['I'] = [config.I_y,config.P_x,config.I_z]
+		PID_param['D'] = [config.D_y,config.P_x,config.D_z]
+		# 创建simplePID对象				[y轴，x轴，z轴姿态]		P 				I 				D
+		self.PID_controller = simplePID([self.targetDist_y,self.targetDist_x,self.targetDist_z], PID_param['P'], PID_param['I'], PID_param['D']) # 实例化simplePID以实现PID控制更新
 		return config
 
 	def set_cmd_vel(self, msg):
@@ -75,83 +69,52 @@ class ArFollower():
 
 		offset = 0 #小车中心与摄像头检测到的AR标签中心的偏差0.06,可以根据相机在小车的位置进行调整
 		#apriltag横向是X,纵向距离是z
-		target_offset_y = marker.pose.pose.pose.position.x + offset #AR标签位姿信息y方向（已校正）
-		target_offset_x = marker.pose.pose.pose.position.z #AR标签位姿信息x方向
-		rospy.loginfo('target position:x=%f,y= %f',target_offset_x,target_offset_y)
-
+		offset_y = marker.pose.pose.pose.position.x + offset #AR标签位置信息y方向（已校正）
+		offset_x = marker.pose.pose.pose.position.z #AR标签位置信息x方向
+		orientation = marker.pose.pose.pose.orientation.z #AR标签姿态信息方向
 		#当AR标签和小车的距离与设定距离存在偏差时
-		rospy.loginfo("目标 %f", self.goal_x)
-		rospy.loginfo("目标 %f", self.goal_y)
-		if target_offset_x > self.goal_x:
-			rospy.loginfo("距离偏移 %f", target_offset_x)
-			linearspeed = (target_offset_x-self.goal_x) * self.linearfront_p
-			rospy.loginfo("linearfront_p %f", self.linearfront_p)
-			rospy.loginfo("d_param %f", self.d_param)
-			rospy.loginfo("向前移动速度 %f", linearspeed)
-			if linearspeed < 0.012:
-				linearspeed = 0
-				#极低速置零，避免小车摇摆
-			if linearspeed > self.max_linear_speed:
-				linearspeed = self.max_linear_speed
-				#速度限幅
-			self.move_cmd.linear.x = linearspeed
-			rospy.loginfo("向前移动 %f", linearspeed)
-			#当AR标签中心与小车中心存在偏差时
-			if target_offset_y > self.goal_y:
-				rospy.loginfo("y轴便宜 %f", target_offset_y)
-				linearspeed = (target_offset_y-self.goal_y) * self.linearfront_p
-				rospy.loginfo("向右移动速度 %f", linearspeed)
-				if linearspeed < 0.012:
-					linearspeed = 0
-					#极低速置零，避免小车摇摆
-				if linearspeed > self.max_linear_speed:
-					linearspeed = self.max_linear_speed
-					#速度限幅
-				self.move_cmd.linear.y = -linearspeed
-				rospy.loginfo("向右移动:%f", -linearspeed)
-			else:
-				linearspeed = (target_offset_y-self.goal_y) * self.linearfront_p
-				if abs(linearspeed) < 0.012:
-					linearspeed = 0
-				if abs(linearspeed) > self.max_linear_speed:
-					linearspeed = -self.max_linear_speed
-				self.move_cmd.linear.y = -linearspeed
-				rospy.loginfo("向左移动:%f", -linearspeed)
-		else:
-			linearspeed = (target_offset_x - self.goal_x) * self.linearback_p
-			if abs(linearspeed) < 0.012:
-				linearspeed = 0
-			if abs(linearspeed) > self.max_linear_speed:
-				linearspeed = -self.max_linear_speed
-			self.move_cmd.linear.x = linearspeed
-			rospy.loginfo("向后移动")
-			#当AR标签中心与小车中心存在偏差时
-			if target_offset_y > self.goal_y:
-				rospy.loginfo("y轴便宜 %f", target_offset_y)
-				linearspeed = (target_offset_y-self.goal_y) * self.linearfront_p
-				rospy.loginfo("向右移动速度 %f", linearspeed)
-				if linearspeed < 0.012:
-					linearspeed = 0
-					#极低速置零，避免小车摇摆
-				if linearspeed > self.max_linear_speed:
-					linearspeed = self.max_linear_speed
-					#速度限幅
-				self.move_cmd.linear.y = -linearspeed
-				rospy.loginfo("向右移动:%f", -linearspeed)
-			else:
-				linearspeed = (target_offset_y-self.goal_y) * self.linearfront_p
-				if abs(linearspeed) < 0.012:
-					linearspeed = 0
-				if abs(linearspeed) > self.max_linear_speed:
-					linearspeed = -self.max_linear_speed
-				self.move_cmd.linear.y = -linearspeed
-				rospy.loginfo("向左移动:%f", -linearspeed)
+		rospy.loginfo("targetDist_y %f", self.targetDist_y)
+		rospy.loginfo("targetDist_x %f", self.targetDist_x)
+		rospy.loginfo("targetDist_z %f", self.targetDist_z)
+		rospy.loginfo("PID_param['P'] %f", PID_param['P'][0])
+		rospy.loginfo("PID_param['P'] %f", PID_param['P'][1])
+		rospy.loginfo("PID_param['P'] %f", PID_param['P'][2])
+		rospy.loginfo("PID_param['I'] %f", PID_param['I'][0])
+		rospy.loginfo("PID_param['I'] %f", PID_param['I'][1])
+		rospy.loginfo("PID_param['I'] %f", PID_param['I'][2])
 
-		def shutdown(self):
-			rospy.loginfo("ar_follow stopping...")
-			self.cmd_vel_pub.publish(Twist())
-			rospy.sleep(1)
+		[speed_y, speed_x,speed_z] = self.PID_controller.update([offset_y, offset_x, orientation])
+		#限速
+		speed_y = np.clip(-speed_y, -self.max_speed_y, self.max_speed_y)
+		speed_x  = np.clip(-speed_x, -self.max_speed_x, self.max_speed_x)
+		speed_z  = np.clip(-speed_z, -self.max_speed_z, self.max_speed_z)
 
+		self.move_cmd.linear.y=speed_y
+		self.move_cmd.linear.y=speed_x
+		self.move_cmd.angular.z=speed_z
+
+		
+class simplePID:
+	def __init__(self, target, P, I, D):
+		# check if parameter shapes are compatabile. 
+		# 检查参数形状是否兼容
+		if(not(np.size(P)==np.size(I)==np.size(D)) or ((np.size(target)<=2))):
+			raise TypeError('input parameters shape is not compatable')
+		rospy.loginfo('PID initialised with P:{}, I:{}, D:{}'.format(P,I,D))
+
+		self.Kp		=np.array(P)
+		self.Ki		=np.array(I)
+		self.Kd		=np.array(D)
+		self.setPoint   =np.array(target)
+		
+		self.last_error=0
+		self.integrator = 0
+		self.integrator_max = float('inf')
+		self.timeOfLastCall = None 
+
+	def update(self, current_value):
+		return [2,2,1]
+	
 if __name__ == '__main__':
 	try:
 		ArFollower()

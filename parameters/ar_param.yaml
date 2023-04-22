@@ -1,8 +1,7 @@
 rate: 10
-goal_x: 0.18
-goal_y: 0.0
-max_angular_speed: 0.3
-min_angular_speed: -0.3
-max_linear_speed: 0.2
-min_linear_speed: -0.2
-
+max_speed_y: 0.2
+max_speed_x: 0.2
+max_speed_z: 0.15
+targetDist_y: 0.0
+targetDist_x: 0.25
+targetDist_z: 0.0
